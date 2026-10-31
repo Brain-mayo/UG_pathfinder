@@ -62,7 +62,21 @@
     @media (min-width: 760px) {
       .panel { left: 16px; right: auto; bottom: 16px; width: 400px; border-radius: 24px; max-height: 80vh; }
     }
-    .handle { width: 48px; height: 6px; border-radius: 3px; background: #d5d9e3; margin: 0 auto 10px; }
+    /* The handle is a button: tap it to lower or raise the panel */
+    .handle {
+      display: block; width: 100%; padding: 4px 0 12px; margin: 0;
+      border: none; background: none; cursor: pointer;
+    }
+    .handle::before {
+      content: ""; display: block; margin: 0 auto;
+      width: 48px; height: 6px; border-radius: 3px; background: #d5d9e3;
+    }
+    .handle:hover::before { background: #b8bfcd; }
+
+    /* A lowered panel only shows the handle and the "peek" part (the title) */
+    .panel.lowered { overflow: hidden; }
+    .panel.lowered > :not(.handle):not(.peek) { display: none; }
+    .panel.lowered .title-row { margin-bottom: 0; }
     .panel h1 { font-size: 22px; margin: 0; }
 
     .search {
@@ -261,8 +275,8 @@
 
   <!-- Panel 1: choose a place -->
   <div id="browsePanel" class="panel">
-    <div class="handle"></div>
-    <div class="title-row">
+    <button class="handle" onclick="togglePanel('browsePanel')" aria-label="Lower or raise the panel"></button>
+    <div class="title-row peek">
       <h1>Where do you want to go?</h1>
       <button class="say-btn" onclick="speak('Where do you want to go? Tap a picture.', true)">🔊</button>  <!-- NEW -->
     </div>
@@ -273,8 +287,8 @@
 
   <!-- NEW IN STEP 6, Panel 2: the guide -->
   <div id="guidePanel" class="panel hidden">
-    <div class="handle"></div>
-    <div class="guide-top">
+    <button class="handle" onclick="togglePanel('guidePanel')" aria-label="Lower or raise the panel"></button>
+    <div class="guide-top peek">
       <div id="guideIcon" class="guide-icon">📚</div>
       <div>
         <div class="going-to">Going to</div>
@@ -483,6 +497,16 @@
 
     document.getElementById("searchBox").addEventListener("input", showPlaces);
 
+    // Lower the panel to see more of the map, or raise it again
+    function togglePanel(id) {
+      document.getElementById(id).classList.toggle("lowered");
+    }
+
+    // Moving the map? Lower the panels so you can see it
+    map.on("dragstart", () => {
+      document.querySelectorAll(".panel").forEach((panel) => panel.classList.add("lowered"));
+    });
+
     // =============================================================
     // NEW IN STEP 6: THE VOICE 🔊
     // =============================================================
@@ -547,9 +571,9 @@
       document.getElementById("guideName").textContent = place.name;
       document.getElementById("hintText").textContent = place.hint || "Look for the place";
 
-      // Swap the panels
+      // Swap the panels (the guide always starts raised)
       document.getElementById("browsePanel").classList.add("hidden");
-      panel.classList.remove("hidden");
+      panel.classList.remove("hidden", "lowered");
 
       // Make the target pin bounce and fade the others
       allPlaces.forEach((p) => {
