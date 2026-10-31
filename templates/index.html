@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UG Pathfinder</title>
+
+  <!-- Leaflet: the free map library -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+    #map { height: 100%; }
+    .hidden { display: none !important; }       /* NEW: hides anything with this class */
+
+    /* The blue "you are here" dot */
+    .me-dot {
+      width: 20px; height: 20px; border-radius: 50%;
+      background: #2563eb; border: 4px solid white;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+      position: relative;
+    }
+    .me-dot::before {
+      content: ""; position: absolute; inset: -14px; border-radius: 50%;
+      background: rgba(37, 99, 235, 0.35);
+      animation: pulse 1.8s ease-out infinite;
+    }
+    @keyframes pulse {
+      from { transform: scale(0.4); opacity: 1; }
+      to   { transform: scale(1.6); opacity: 0; }
+    }
+
+    /* Place pins */
+    .pin {
+      width: 40px; height: 40px;
+      border-radius: 50% 50% 50% 0;
+      background: var(--c);
+      transform: rotate(-45deg);
+      display: grid; place-items: center;
+      border: 3px solid white;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.3);
+      animation: drop 0.6s ease-out both;
+    }
+    .pin span { transform: rotate(45deg); font-size: 18px; }
+    @keyframes drop {
+      from { transform: rotate(-45deg) translateY(-40px); opacity: 0; }
+      to   { transform: rotate(-45deg); opacity: 1; }
+    }
+
+    /* The white panel at the bottom of the screen */
+    .panel {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      z-index: 1000;
+      max-height: 50vh; overflow-y: auto;
+      background: white;
+      border-radius: 24px 24px 0 0;
+      padding: 10px 16px 20px;
+      box-shadow: 0 -6px 30px rgba(0,0,0,0.25);
+      animation: slideUp 0.6s cubic-bezier(.2, 1.2, .4, 1) both;
+    }
+    @media (min-width: 760px) {
+      .panel { left: 16px; right: auto; bottom: 16px; width: 400px; border-radius: 24px; max-height: 80vh; }
+    }
+    .handle { width: 48px; height: 6px; border-radius: 3px; background: #d5d9e3; margin: 0 auto 10px; }
+    .panel h1 { font-size: 22px; margin: 0; }
+
+    .search {
+      width: 100%; box-sizing: border-box;
+      padding: 12px 16px; font-size: 17px;
+      border: 2px solid #e5e7eb; border-radius: 14px; outline: none;
+    }
+    .search:focus { border-color: #2563eb; }
+
+    .chips { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
+    .chip {
+      display: flex; flex-direction: column; align-items: center; gap: 2px;
+      padding: 8px 4px; border-radius: 16px;
+      border: 3px solid transparent; background: #f3f5fa;
+      font: 700 13px system-ui, sans-serif; color: #12182b;
+      cursor: pointer;
+      transition: transform 0.15s, border-color 0.2s;
+      animation: popIn 0.4s ease both;
+    }
+    .chip .icon { font-size: 26px; }
+    .chip.active { border-color: var(--c); background: white; }
+    .chip:active { transform: scale(0.9); }
+
+    .place {
+      display: flex; align-items: center; gap: 12px;
+      width: 100%; padding: 10px; margin-bottom: 8px;
+      border-radius: 16px; border: 2px solid #eef0f5; background: white;
+      font-family: inherit; color: #12182b; text-align: left;
+      cursor: pointer;
+      transition: transform 0.15s;
+      animation: fadeUp 0.4s ease both;
+    }
+    .place:active { transform: scale(0.97); }
+    .place .icon {
+      width: 48px; height: 48px; border-radius: 14px; flex: none;
+      display: grid; place-items: center; font-size: 26px;
+      background: var(--bg);
+    }
+    .place .name { font-weight: 800; font-size: 17px; }
+    .place .time { color: #5b6478; font-size: 14px; }
+    .place .go {
+      margin-left: auto; width: 40px; height: 40px; border-radius: 50%; flex: none;
+      display: grid; place-items: center;
+      background: var(--c); color: white; font-size: 20px;
+    }
+    .empty { text-align: center; color: #5b6478; padding: 16px; font-size: 17px; }
+
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: none; } }
+    @keyframes popIn   { from { transform: scale(0.5); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes fadeUp  { from { transform: translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+    /* ===== NEW IN STEP 6 ===== */
+
+    /* Round speaker buttons */
+    .voice-btn {
+      position: fixed; top: 12px; right: 12px; z-index: 1000;
+      width: 52px; height: 52px; border-radius: 50%; border: none;
+      background: white; font-size: 24px; cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+    }
+    .voice-btn.off { opacity: 0.5; }
+    .title-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+    .say-btn {
+      flex: none; width: 44px; height: 44px; border-radius: 50%; border: none;
+      background: #e8efff; font-size: 20px; cursor: pointer;
+    }
+    .voice-btn:active, .say-btn:active { transform: scale(0.9); }
+
+    /* Pins while guiding: the target bounces, the others fade */
+    .pin.target { animation: drop 0.6s ease-out both, bounce 1.2s ease-in-out 0.6s infinite; }
+    .pin.faded  { filter: grayscale(0.8) opacity(0.35); }   /* filter, because the drop animation controls opacity */
+    @keyframes bounce { 0%, 100% { margin-top: 0; } 50% { margin-top: -14px; } }
+
+    /* The moving dotted line from you to the place */
+    .route-line { stroke-dasharray: 2 14; stroke-linecap: round; animation: march 0.8s linear infinite; }
+    @keyframes march { to { stroke-dashoffset: -16; } }
+
+    /* The guide panel */
+    #guidePanel { max-height: 65vh; }
+    .guide-top { display: flex; align-items: center; gap: 12px; }
+    .guide-icon {
+      width: 56px; height: 56px; border-radius: 16px; flex: none;
+      display: grid; place-items: center; font-size: 30px;
+      background: var(--bg);
+      animation: popIn 0.5s ease both;
+    }
+    .going-to { color: #5b6478; font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; }
+    #guideName { margin: 0; font-size: 22px; }
+
+    .guide-middle { display: flex; align-items: center; gap: 16px; margin: 14px 0 6px; }
+    .arrow-ring {
+      position: relative; flex: none;
+      width: 120px; height: 120px; border-radius: 50%;
+      background: #eaf0ff;
+      display: grid; place-items: center;
+    }
+    .arrow-ring::after {                      /* the ring that pulses outwards */
+      content: ""; position: absolute; inset: -4px; border-radius: 50%;
+      border: 4px solid #2563eb; opacity: 0;
+      animation: ringPulse 2s ease-out infinite;
+    }
+    @keyframes ringPulse { from { transform: scale(0.85); opacity: 0.7; } to { transform: scale(1.25); opacity: 0; } }
+    .arrow {
+      width: 80px; height: 80px; fill: #0b3d91;
+      transition: transform 0.6s cubic-bezier(.3, 1.3, .5, 1);   /* smooth, slightly springy turn */
+    }
+    .arrow-ring.close .arrow { fill: #16a34a; }                 /* turns green when you're close */
+
+    .stats { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+    .stat {
+      display: flex; align-items: center; gap: 10px;
+      background: #f3f5fa; border-radius: 14px; padding: 8px 12px;
+      color: #5b6478; font-size: 15px;
+    }
+    .stat span { font-size: 24px; }
+    .stat b { font-size: 22px; color: #12182b; }
+
+    .arrow-label { font-size: 20px; font-weight: 800; text-align: center; margin: 8px 0; }
+    .hint {
+      display: flex; align-items: center; gap: 10px;
+      background: #fff7e0; border-radius: 14px; padding: 10px 12px;
+      font-size: 16px; margin-bottom: 12px;
+    }
+    .hint span { font-size: 24px; }
+
+    .guide-buttons { display: grid; grid-template-columns: 1.4fr 1fr; gap: 10px; }
+    .big-btn {
+      padding: 14px; border: none; border-radius: 16px;
+      font: 800 17px system-ui, sans-serif; color: white; cursor: pointer;
+      box-shadow: 0 4px 0 rgba(0,0,0,0.18);
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    .big-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 rgba(0,0,0,0.18); }   /* press down */
+    .blue { background: #2563eb; }
+    .grey { background: #6b7280; }
+
+    /* ===== NEW IN STEP 7: THE WALKING PERSON ===== */
+
+    /* The white circle the walker stands in (this replaces the blue dot while guiding) */
+    .walker-badge {
+      position: relative;
+      width: 44px; height: 44px; border-radius: 50%;
+      background: white; border: 3px solid #2563eb; box-sizing: border-box;
+      display: grid; place-items: center;
+      box-shadow: 0 3px 10px rgba(0,0,0,0.35);
+    }
+    .walker-badge::before {                 /* the same pulsing ring as the blue dot */
+      content: ""; position: absolute; inset: -12px; border-radius: 50%;
+      background: rgba(37, 99, 235, 0.3); z-index: -1;
+      animation: pulse 1.8s ease-out infinite;
+    }
+
+    /* The "ghost" walker that shows you the way along the dotted line */
+    .walker-badge.ghost { border-color: #16a34a; opacity: 0.85; transition: opacity 0.5s; }
+    .walker-badge.ghost::before { display: none; }
+    .walker-badge.ghost.done { opacity: 0; }
+
+    /* The person drawing */
+    .walker { width: 26px; height: 38px; overflow: visible; transition: transform 0.4s; }
+    .walker.left { transform: scaleX(-1); }          /* mirror image = facing left */
+    .walker.mini { width: 20px; height: 30px; }      /* the small one next to the walking time */
+
+    .walker .limb { fill: none; stroke-linecap: round; stroke-width: 6.5; }
+    .walker .front { stroke: #0b3d91; }               /* near-side arm and leg: dark blue */
+    .walker .back  { stroke: #8fb0ff; }               /* far-side arm and leg: light blue */
+    .walker .head  { fill: #0b3d91; }
+    .ghost .walker .front { stroke: #15803d; }
+    .ghost .walker .back  { stroke: #86efac; }
+    .ghost .walker .head  { fill: #15803d; }
+
+    /* Legs swing from the hip (20, 34); arms swing from the shoulder (20, 18) */
+    .leg-front, .leg-back { transform-origin: 20px 34px; animation: swingLeg 0.9s ease-in-out infinite; }
+    .arm-front, .arm-back { transform-origin: 20px 18px; animation: swingArm 0.9s ease-in-out infinite; }
+    /* A negative delay starts halfway through, so these move OPPOSITE to the others */
+    .leg-back, .arm-front { animation-delay: -0.45s; }
+
+    /* The whole body bobs up and down a little: twice per stride, like a real walk */
+    .bob { animation: bob 0.45s ease-in-out infinite; }
+
+    @keyframes swingLeg { 0%, 100% { transform: rotate(32deg); } 50% { transform: rotate(-32deg); } }
+    @keyframes swingArm { 0%, 100% { transform: rotate(-40deg); } 50% { transform: rotate(40deg); } }
+    @keyframes bob      { 0%, 100% { transform: translateY(0); }   50% { transform: translateY(-2px); } }
+
+    /* When you arrive, the walker stops walking */
+    .stopped * { animation-play-state: paused !important; }
+
+    .green { background: #16a34a; }
+    .show-way { width: 100%; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- NEW: turn the voice on or off -->
+  <button id="voiceBtn" class="voice-btn" onclick="toggleVoice()">🔊</button>
+
+  <!-- Panel 1: choose a place -->
+  <div id="browsePanel" class="panel">
+    <div class="handle"></div>
+    <div class="title-row">
+      <h1>Where do you want to go?</h1>
+      <button class="say-btn" onclick="speak('Where do you want to go? Tap a picture.', true)">🔊</button>  <!-- NEW -->
+    </div>
+    <input id="searchBox" class="search" type="search" placeholder="🔍 Type a place name">
+    <div id="chips" class="chips"></div>
+    <div id="placeList"></div>
+  </div>
+
+  <!-- NEW IN STEP 6, Panel 2: the guide -->
+  <div id="guidePanel" class="panel hidden">
+    <div class="handle"></div>
+    <div class="guide-top">
+      <div id="guideIcon" class="guide-icon">📚</div>
+      <div>
+        <div class="going-to">Going to</div>
+        <h2 id="guideName">Place</h2>
+      </div>
+    </div>
+
+    <div class="guide-middle">
+      <div id="arrowRing" class="arrow-ring">
+        <!-- the arrow is drawn with SVG so it looks the same on every phone -->
+        <svg id="arrow" class="arrow" viewBox="0 0 100 100">
+          <path d="M50 6 L88 54 H63 V94 H37 V54 H12 Z" />
+        </svg>
+      </div>
+      <div class="stats">
+        <div class="stat"><span id="miniWalker"></span><b id="walkTime">-</b> walk</div>  <!-- CHANGED: animated walker -->
+        <div class="stat"><span>📏</span><b id="walkDist">-</b> away</div>
+      </div>
+    </div>
+
+    <div id="arrowLabel" class="arrow-label">Follow the arrow</div>
+    <div class="hint"><span>👀</span><span id="hintText">Look for the place</span></div>
+
+    <!-- NEW IN STEP 7 -->
+    <button class="big-btn green show-way" onclick="showTheWay(true)">👣 Show me the way</button>
+
+    <div class="guide-buttons">
+      <button class="big-btn blue" onclick="sayAgain()">🔊 Say it again</button>
+      <button class="big-btn grey" onclick="stopGuide()">✖ Stop</button>
+    </div>
+  </div>
+
+  <script>
+    // ---------- MAP ----------
+    const map = L.map("map").setView([5.6490, -0.1870], 16);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "© OpenStreetMap"
+    }).addTo(map);
+
+    // ---------- YOUR LOCATION ----------
+    let meMarker = null;
+    let myPosition = null;
+    let pretending = false;     // 👈 NEW: true when you Shift+click to fake your location
+
+    const meIcon = L.divIcon({ className: "", html: '<div class="me-dot"></div>', iconSize: [20, 20] });
+
+    function onLocationFound(position) {
+      if (pretending) return;   // 👈 NEW: ignore the real GPS while pretending
+      moveMe(position.coords.latitude, position.coords.longitude);
+    }
+
+    // 👈 NEW: moving the dot now lives in its own function, so the
+    //    real GPS and the Shift+click trick can both use it
+    function moveMe(lat, lng) {
+      myPosition = [lat, lng];
+      const firstTime = meMarker === null;
+      if (firstTime) {
+        meMarker = L.marker([lat, lng], { icon: meIcon, zIndexOffset: 1000 }).addTo(map);
+        map.flyTo([lat, lng], 17);
+      } else {
+        meMarker.setLatLng([lat, lng]);
+      }
+      if (target) updateGuide();   // 👈 NEW: while guiding, update the arrow
+      else if (firstTime || pretending) showPlaces();   // otherwise, show walking times
+    }
+
+    function onLocationError(error) {
+      alert("Could not find your location: " + error.message);
+    }
+
+    navigator.geolocation.watchPosition(onLocationFound, onLocationError, {
+      enableHighAccuracy: true
+    });
+
+    // ---------- PLACES ----------
+    const CATEGORIES = {
+      study:  { icon: "📚", label: "Library", color: "#2563eb" },
+      class:  { icon: "🏫", label: "Classes", color: "#7c3aed" },
+      food:   { icon: "🍲", label: "Food",    color: "#ea580c" },
+      hostel: { icon: "🛏️", label: "Hostels", color: "#0d9488" },
+      health: { icon: "🏥", label: "Health",  color: "#dc2626" },
+      sport:  { icon: "⚽", label: "Sports",  color: "#16a34a" },
+      gate:   { icon: "🚪", label: "Gates",   color: "#64748b" },
+    };
+
+    let allPlaces = [];
+    let currentFilter = "all";
+    const placeMarkers = {};
+
+    // 👈 CHANGED: extraClass lets us make a pin "target" (bouncing) or "faded"
+    function makePin(place, extraClass = "") {
+      const cat = CATEGORIES[place.category];
+      return L.divIcon({
+        className: "",
+        html: `<div class="pin ${extraClass}" style="--c:${cat.color}"><span>${cat.icon}</span></div>`,
+        iconSize: [40, 40],
+        iconAnchor: [20, 40],
+      });
+    }
+
+    fetch("/api/places")
+      .then((response) => response.json())
+      .then((places) => {
+        allPlaces = places;
+        places.forEach((place) => {
+          placeMarkers[place.id] = L.marker([place.lat, place.lng], { icon: makePin(place) })
+            .addTo(map)
+            .on("click", () => startGuide(place));   // 👈 CHANGED: tapping a pin starts the guide
+        });
+        showChips();
+        showPlaces();
+      });
+
+    // ---------- DISTANCE AND DIRECTION ----------
+    function distance(a, b) {
+      const R = 6371000;
+      const toRad = (deg) => deg * Math.PI / 180;
+      const dLat = toRad(b[0] - a[0]);
+      const dLng = toRad(b[1] - a[1]);
+      const h = Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(a[0])) * Math.cos(toRad(b[0])) * Math.sin(dLng / 2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(h));
+    }
+
+    // 👈 NEW: which direction is b from a? (0 = North, 90 = East, 180 = South, 270 = West)
+    function bearing(a, b) {
+      const toRad = (deg) => deg * Math.PI / 180;
+      const y = Math.sin(toRad(b[1] - a[1])) * Math.cos(toRad(b[0]));
+      const x = Math.cos(toRad(a[0])) * Math.sin(toRad(b[0])) -
+                Math.sin(toRad(a[0])) * Math.cos(toRad(b[0])) * Math.cos(toRad(b[1] - a[1]));
+      return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    }
+
+    function minutesAway(metres) {                  // 👈 NEW: just the number
+      return Math.max(1, Math.round(metres / 80));
+    }
+    function walkingTime(metres) {                  // 👈 CHANGED: uses minutesAway
+      return minutesAway(metres) + " min";
+    }
+    function metresText(metres) {                   // 👈 NEW: "350 m" or "1.2 km"
+      if (metres < 1000) return Math.round(metres / 10) * 10 + " m";
+      return (metres / 1000).toFixed(1) + " km";
+    }
+
+    // ---------- THE BUTTONS AND THE LIST ----------
+    function showChips() {
+      const allButton = { icon: "⭐", label: "All", color: "#334155" };
+      const buttons = [["all", allButton], ...Object.entries(CATEGORIES)];
+
+      document.getElementById("chips").innerHTML = buttons.map(([key, cat], i) => `
+        <button class="chip ${key === currentFilter ? "active" : ""}" data-key="${key}"
+                style="--c:${cat.color}; animation-delay:${i * 0.05}s"
+                onclick="pickCategory('${key}', '${cat.label}')">
+          <span class="icon">${cat.icon}</span>${cat.label}
+        </button>`).join("");
+    }
+
+    function pickCategory(key, label) {
+      currentFilter = key;
+      speak(label, true);                           // 👈 NEW: say the button's name
+      document.querySelectorAll(".chip").forEach((chip) => {
+        chip.classList.toggle("active", chip.dataset.key === key);
+      });
+      showPlaces();
+    }
+
+    function showPlaces() {
+      if (allPlaces.length === 0) return;
+
+      const searchText = document.getElementById("searchBox").value.toLowerCase();
+
+      const list = allPlaces.filter((place) =>
+        (currentFilter === "all" || place.category === currentFilter) &&
+        place.name.toLowerCase().includes(searchText)
+      );
+
+      if (myPosition) {
+        list.sort((a, b) =>
+          distance(myPosition, [a.lat, a.lng]) - distance(myPosition, [b.lat, b.lng]));
+      }
+
+      const placeList = document.getElementById("placeList");
+
+      if (list.length === 0) {
+        placeList.innerHTML = `<div class="empty">😕 No place found</div>`;
+        return;
+      }
+
+      placeList.innerHTML = list.map((place, i) => {
+        const cat = CATEGORIES[place.category];
+        const time = myPosition ? "🚶 " + walkingTime(distance(myPosition, [place.lat, place.lng])) : "";
+        return `
+          <button class="place" onclick="startGuideById(${place.id})"
+                  style="--c:${cat.color}; --bg:${cat.color}22; animation-delay:${i * 0.04}s">
+            <span class="icon">${cat.icon}</span>
+            <span>
+              <div class="name">${place.name}</div>
+              <div class="time">${time}</div>
+            </span>
+            <span class="go">➜</span>
+          </button>`;
+      }).join("");
+    }
+
+    document.getElementById("searchBox").addEventListener("input", showPlaces);
+
+    // =============================================================
+    // NEW IN STEP 6: THE VOICE 🔊
+    // =============================================================
+    let voiceOn = true;
+    let lastSpoken = "";
+    let lastSpokenTime = 0;
+
+    function speak(text, force = false) {
+      if (!voiceOn || !("speechSynthesis" in window)) return;
+      // Don't repeat the same words, and don't talk more than once every 4 seconds
+      // (unless force is true, which means "a button was pressed, say it now")
+      if (!force && (text === lastSpoken || Date.now() - lastSpokenTime < 4000)) return;
+      lastSpoken = text;
+      lastSpokenTime = Date.now();
+
+      speechSynthesis.cancel();                       // stop anything already talking
+      const talk = new SpeechSynthesisUtterance(text);
+      talk.rate = 0.9;                                // a bit slower = easier to follow
+      talk.lang = "en-GB";
+      speechSynthesis.speak(talk);
+    }
+
+    // Important news (arrived, almost there): say it straight away, but only once
+    function sayOnce(text) {
+      if (text !== lastSpoken) speak(text, true);
+    }
+
+    function toggleVoice() {
+      voiceOn = !voiceOn;
+      const btn = document.getElementById("voiceBtn");
+      btn.textContent = voiceOn ? "🔊" : "🔇";
+      btn.classList.toggle("off", !voiceOn);
+      if (voiceOn) speak("Voice is on.", true);
+      else speechSynthesis.cancel();
+    }
+
+    // =============================================================
+    // NEW IN STEP 6: THE GUIDE ➜
+    // =============================================================
+    let target = null;      // the place we're walking to (null = not guiding)
+    let routeLine = null;   // the dotted line on the map
+    let heading = null;     // which way the phone faces (needs a compass, so phones only)
+    let arrowAngle = 0;     // the arrow's current angle
+
+    function startGuideById(id) {
+      startGuide(allPlaces.find((p) => p.id === id));
+    }
+
+    function startGuide(place) {
+      if (!myPosition) {
+        speak("Please wait. Finding where you are.", true);
+        return;
+      }
+      askForCompass();
+      target = place;
+
+      // Fill in the guide panel
+      const cat = CATEGORIES[place.category];
+      const panel = document.getElementById("guidePanel");
+      panel.style.setProperty("--bg", cat.color + "22");
+      document.getElementById("guideIcon").textContent = cat.icon;
+      document.getElementById("guideName").textContent = place.name;
+      document.getElementById("hintText").textContent = place.hint || "Look for the place";
+
+      // Swap the panels
+      document.getElementById("browsePanel").classList.add("hidden");
+      panel.classList.remove("hidden");
+
+      // Make the target pin bounce and fade the others
+      allPlaces.forEach((p) => {
+        placeMarkers[p.id].setIcon(makePin(p, p.id === place.id ? "target" : "faded"));
+      });
+
+      // Zoom the map so you AND the place both fit, leaving room for the panel
+      const wide = window.innerWidth >= 760;
+      map.flyToBounds(L.latLngBounds([myPosition, [place.lat, place.lng]]), {
+        paddingTopLeft: wide ? [450, 60] : [40, 80],
+        paddingBottomRight: wide ? [60, 60] : [40, window.innerHeight * 0.6],
+        duration: 1.2,
+      });
+
+      meMarker.setIcon(walkerIcon());      // 👈 NEW IN STEP 7: you become the walking person
+      updateGuide();
+      sayAgain();
+      setTimeout(showTheWay, 1400);        // 👈 NEW IN STEP 7: after the map flies, show the way once
+    }
+
+    // Runs every time you move (or turn your phone)
+    function updateGuide() {
+      if (!target || !myPosition) return;
+      const dest = [target.lat, target.lng];
+      const d = distance(myPosition, dest);
+
+      document.getElementById("walkTime").textContent = walkingTime(d);
+      document.getElementById("walkDist").textContent = metresText(d);
+
+      // The dotted line: create it once, then just move its ends
+      if (routeLine) routeLine.setLatLngs([myPosition, dest]);
+      else routeLine = L.polyline([myPosition, dest], { color: "#2563eb", weight: 6, className: "route-line" }).addTo(map);
+
+      // Point the arrow. With a compass, point relative to where the phone faces.
+      const direction = bearing(myPosition, dest);
+      const angle = heading === null ? direction : direction - heading;
+      rotateArrow(angle);
+
+      document.getElementById("arrowRing").classList.toggle("close", d < 100);
+
+      // 👈 NEW IN STEP 7: make the walker face the place (left or right)...
+      const facingLeft = direction > 180;
+      const me = meMarker.getElement();
+      if (me) {
+        me.querySelector(".walker")?.classList.toggle("left", facingLeft);
+        // ...and stop walking when you've arrived
+        me.querySelector(".walker-badge")?.classList.toggle("stopped", d <= 30);
+      }
+
+      // Pick the words
+      const label = document.getElementById("arrowLabel");
+      if (d <= 30) {
+        label.textContent = "You are here! 🎉";
+        sayOnce(`You have arrived at ${target.name}.`);
+      } else if (d < 100) {
+        label.textContent = "Almost there! Look around 👀";
+        sayOnce("You are almost there. Look around.");
+      } else if (heading === null) {
+        label.textContent = "Follow the dotted line 🔵";
+      } else {
+        label.textContent = turnWords(angle);
+        speak(turnWords(angle));
+      }
+    }
+
+    // Turn an angle into very simple words
+    function turnWords(angle) {
+      const a = ((angle % 360) + 540) % 360 - 180;   // squeeze it to between -180 and 180
+      if (Math.abs(a) <= 25)  return "Go straight ⬆";
+      if (Math.abs(a) >= 150) return "Turn around ⬇";
+      if (a > 0) return a < 70 ? "Go a little right ↗" : "Turn right ➡";
+      return a > -70 ? "Go a little left ↖" : "Turn left ⬅";
+    }
+
+    // Turn the arrow the SHORT way round (350° -> 10° should turn 20°, not 340°)
+    function rotateArrow(newAngle) {
+      const diff = ((newAngle - arrowAngle) % 360 + 540) % 360 - 180;
+      arrowAngle += diff;
+      document.getElementById("arrow").style.transform = `rotate(${arrowAngle}deg)`;
+    }
+
+    function sayAgain() {
+      if (!target) return;
+      const mins = minutesAway(distance(myPosition, [target.lat, target.lng]));
+      const how = heading === null ? "Follow the dotted line on the map." : turnWords(arrowAngle);
+      speak(`Going to ${target.name}. About ${mins} minute${mins === 1 ? "" : "s"} walk. ${how} ${target.hint || ""}`, true);
+    }
+
+    function stopGuide() {
+      target = null;
+      if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+      allPlaces.forEach((p) => placeMarkers[p.id].setIcon(makePin(p)));   // pins back to normal
+      meMarker.setIcon(meIcon);          // 👈 NEW IN STEP 7: back to the blue dot
+      stopShowingTheWay();               // 👈 NEW IN STEP 7
+      document.getElementById("guidePanel").classList.add("hidden");
+      document.getElementById("browsePanel").classList.remove("hidden");
+      showPlaces();
+      speechSynthesis.cancel();
+    }
+
+    // =============================================================
+    // NEW IN STEP 7: THE WALKING PERSON 🚶
+    // =============================================================
+
+    // Draw the person with SVG: a head, a body, two arms and two legs.
+    // The drawing faces RIGHT. CSS mirrors it when we need it to face left.
+    function walkerSVG(extraClass = "") {
+      return `
+        <svg class="walker ${extraClass}" viewBox="0 0 40 60">
+          <g class="bob">
+            <g transform="rotate(6 20 34)">   <!-- lean forward a little, like walking -->
+              <line class="limb back leg-back"   x1="20" y1="34" x2="20" y2="54" />
+              <line class="limb back arm-back"   x1="20" y1="18" x2="20" y2="31" />
+              <line class="limb front"           x1="20" y1="17" x2="20" y2="34" style="stroke-width:10" />
+              <line class="limb front leg-front" x1="20" y1="34" x2="20" y2="54" />
+              <line class="limb front arm-front" x1="20" y1="18" x2="20" y2="31" />
+              <circle class="head" cx="20" cy="8.5" r="7.5" />
+              <line class="limb front" x1="25" y1="4" x2="32" y2="5.5" style="stroke-width:3.5" />  <!-- cap -->
+            </g>
+          </g>
+        </svg>`;
+    }
+
+    // Turn the drawing into a map marker
+    function walkerIcon(extraClass = "") {
+      return L.divIcon({
+        className: "",
+        html: `<div class="walker-badge ${extraClass}">${walkerSVG()}</div>`,
+        iconSize: [44, 44],
+        iconAnchor: [22, 22],      // the middle of the circle sits on your exact spot
+      });
+    }
+
+    // Put the small walker next to the walking time
+    document.getElementById("miniWalker").innerHTML = walkerSVG("mini");
+
+    // ---------- "Show me the way": a green walker walks along the dotted line ----------
+    let ghost = null;      // the green walker marker
+    let ghostRun = 0;      // counts each walk, so an old walk knows when to stop
+
+    function showTheWay(pressedButton = false) {
+      if (!target || !myPosition) return;
+      if (pressedButton) speak("Watch the little person. Walk the same way.", true);
+      stopShowingTheWay();
+
+      const start = [...myPosition];              // copy of where you are now
+      const end = [target.lat, target.lng];
+      const walkSeconds = 4;
+      const thisRun = ++ghostRun;
+
+      ghost = L.marker(start, { icon: walkerIcon("ghost"), interactive: false }).addTo(map);
+      ghost.getElement().querySelector(".walker").classList.toggle("left", bearing(start, end) > 180);
+
+      const startTime = performance.now();
+
+      // This runs about 60 times a second, moving the walker a tiny bit each time
+      function step(now) {
+        if (thisRun !== ghostRun) return;         // a newer walk started, or the guide stopped
+        const t = Math.min(1, (now - startTime) / (walkSeconds * 1000));   // 0 = start, 1 = end
+        ghost.setLatLng([
+          start[0] + (end[0] - start[0]) * t,
+          start[1] + (end[1] - start[1]) * t,
+        ]);
+        if (t < 1) {
+          requestAnimationFrame(step);            // not there yet: draw the next frame
+        } else {
+          ghost.getElement().querySelector(".walker-badge").classList.add("done");   // fade out
+          setTimeout(() => { if (thisRun === ghostRun) stopShowingTheWay(); }, 600);
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function stopShowingTheWay() {
+      ghostRun++;                                 // tells any running walk to stop
+      if (ghost) { map.removeLayer(ghost); ghost = null; }
+    }
+
+    // ---------- COMPASS (phones only) ----------
+    let compassAsked = false;
+    function askForCompass() {
+      if (compassAsked) return;
+      compassAsked = true;
+      // iPhones must ask permission first; Android phones don't
+      if (typeof DeviceOrientationEvent !== "undefined" &&
+          typeof DeviceOrientationEvent.requestPermission === "function") {
+        DeviceOrientationEvent.requestPermission()
+          .then((answer) => { if (answer === "granted") listenToCompass(); })
+          .catch(() => {});
+      } else {
+        listenToCompass();
+      }
+    }
+
+    function listenToCompass() {
+      const onTurn = (e) => {
+        let h = null;
+        if (typeof e.webkitCompassHeading === "number") h = e.webkitCompassHeading;   // iPhone
+        else if (e.absolute && typeof e.alpha === "number") h = 360 - e.alpha;       // Android
+        if (h === null) return;
+        heading = h;
+        updateGuide();
+      };
+      window.addEventListener("deviceorientationabsolute", onTurn);
+      window.addEventListener("deviceorientation", onTurn);
+    }
+
+    // ---------- DEVELOPER TOOLS ----------
+    map.on("click", (e) => {
+      // 👈 NEW: hold SHIFT and click to pretend you are standing there
+      if (e.originalEvent.shiftKey) {
+        pretending = true;
+        moveMe(e.latlng.lat, e.latlng.lng);
+        return;
+      }
+      // Normal click: show the coordinates
+      const lat = e.latlng.lat.toFixed(5);
+      const lng = e.latlng.lng.toFixed(5);
+      L.popup().setLatLng(e.latlng).setContent(`📌 ${lat}, ${lng}`).openOn(map);
+      console.log(`${lat}, ${lng}`);
+    });
+  </script>
+</body>
+</html>
