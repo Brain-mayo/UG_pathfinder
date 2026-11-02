@@ -562,6 +562,8 @@
       }
       askForCompass();
       target = place;
+      route = null;                        // 👈 NEW: forget the old path...
+      fetchRoute(true);                    // ...and ask for the real one
 
       // Fill in the guide panel
       const cat = CATEGORIES[place.category];
@@ -580,35 +582,44 @@
         placeMarkers[p.id].setIcon(makePin(p, p.id === place.id ? "target" : "faded"));
       });
 
-      // Zoom the map so you AND the place both fit, leaving room for the panel
-      const wide = window.innerWidth >= 760;
-      map.flyToBounds(L.latLngBounds([myPosition, [place.lat, place.lng]]), {
-        paddingTopLeft: wide ? [450, 60] : [40, 80],
-        paddingBottomRight: wide ? [60, 60] : [40, window.innerHeight * 0.6],
-        duration: 1.2,
-      });
+      fitGuide([myPosition, [place.lat, place.lng]]);
 
       meMarker.setIcon(walkerIcon());      // 👈 NEW IN STEP 7: you become the walking person
       updateGuide();
       sayAgain();
-      setTimeout(showTheWay, 1400);        // 👈 NEW IN STEP 7: after the map flies, show the way once
+      // 👈 CHANGED: "show the way" now starts once the route arrives (see fetchRoute)
+    }
+
+    // Zoom the map so all these points fit, leaving room for the panel
+    function fitGuide(latlngs) {
+      const wide = window.innerWidth >= 760;
+      map.flyToBounds(L.latLngBounds(latlngs), {
+        paddingTopLeft: wide ? [450, 60] : [40, 80],
+        paddingBottomRight: wide ? [60, 60] : [40, window.innerHeight * 0.6],
+        duration: 1.2,
+      });
     }
 
     // Runs every time you move (or turn your phone)
     function updateGuide() {
       if (!target || !myPosition) return;
       const dest = [target.lat, target.lng];
-      const d = distance(myPosition, dest);
+      const d = distance(myPosition, dest);       // straight-line distance, for "you are here"
+      const way = wayAhead();                     // 👈 NEW: the part of the path still to walk
 
-      document.getElementById("walkTime").textContent = walkingTime(d);
-      document.getElementById("walkDist").textContent = metresText(d);
+      document.getElementById("walkTime").textContent = walkingTime(way.metres);   // 👈 CHANGED
+      document.getElementById("walkDist").textContent = metresText(way.metres);    // 👈 CHANGED
 
-      // The dotted line: create it once, then just move its ends
-      if (routeLine) routeLine.setLatLngs([myPosition, dest]);
-      else routeLine = L.polyline([myPosition, dest], { color: "#2563eb", weight: 6, className: "route-line" }).addTo(map);
+      // The dotted line: create it once, then just move it  (👈 CHANGED: follows the path)
+      const line = [myPosition, ...way.points];
+      if (routeLine) routeLine.setLatLngs(line);
+      else routeLine = L.polyline(line, { color: "#2563eb", weight: 6, className: "route-line" }).addTo(map);
 
-      // Point the arrow. With a compass, point relative to where the phone faces.
-      const direction = bearing(myPosition, dest);
+      // 👈 NEW: wandered off the path (or have no path yet)? Ask again, but not more than every 10 seconds
+      if (way.offPath > 50 && Date.now() - lastRouteAsk > 10000) fetchRoute();
+
+      // Point the arrow at the next bit of the path. With a compass, point relative to where the phone faces.
+      const direction = bearing(myPosition, way.aim);   // 👈 CHANGED: was straight at the place
       const angle = heading === null ? direction : direction - heading;
       rotateArrow(angle);
 
@@ -657,13 +668,15 @@
 
     function sayAgain() {
       if (!target) return;
-      const mins = minutesAway(distance(myPosition, [target.lat, target.lng]));
+      const mins = minutesAway(wayAhead().metres);    // 👈 CHANGED: along the path
       const how = heading === null ? "Follow the dotted line on the map." : turnWords(arrowAngle);
       speak(`Going to ${target.name}. About ${mins} minute${mins === 1 ? "" : "s"} walk. ${how} ${target.hint || ""}`, true);
     }
 
     function stopGuide() {
       target = null;
+      route = null;                      // 👈 NEW: forget the path...
+      routeAsk++;                        // ...and ignore any answer still on its way
       if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
       allPlaces.forEach((p) => placeMarkers[p.id].setIcon(makePin(p)));   // pins back to normal
       meMarker.setIcon(meIcon);          // 👈 NEW IN STEP 7: back to the blue dot
@@ -672,6 +685,70 @@
       document.getElementById("browsePanel").classList.remove("hidden");
       showPlaces();
       speechSynthesis.cancel();
+    }
+
+    // =============================================================
+    // NEW: REAL WALKING ROUTES 🛣️
+    // Our server asks openrouteservice for a path along real roads and footpaths.
+    // If that fails, we simply keep the straight dotted line.
+    // =============================================================
+    let route = null;        // the path as [lat, lng] points, or null = use a straight line
+    let routeAsk = 0;        // counts each request, so an old answer knows it's too late
+    let lastRouteAsk = 0;    // when we last asked (in milliseconds)
+
+    function fetchRoute(isNewGuide = false) {
+      const thisAsk = ++routeAsk;
+      const from = myPosition;
+      const place = target;
+      lastRouteAsk = Date.now();
+
+      fetch(`/api/route?from_lat=${from[0]}&from_lng=${from[1]}&to_lat=${place.lat}&to_lng=${place.lng}`)
+        .then((response) => response.ok ? response.json() : Promise.reject(response.status))
+        .then((data) => {
+          if (thisAsk !== routeAsk) return;            // too late: Stop was pressed, or a newer request went out
+          route = data.points;
+          updateGuide();                               // redraw the line along the path
+          if (isNewGuide) fitGuide([from, ...route, [place.lat, place.lng]]);   // make the whole path fit
+        })
+        .catch(() => {})                               // no route? keep the straight line
+        .finally(() => {
+          // When a new guide starts, show the way once the map has finished flying
+          if (isNewGuide && thisAsk === routeAsk) setTimeout(showTheWay, 1400);
+        });
+    }
+
+    // The part of the path still to walk, how long it is, and where to point the arrow
+    function wayAhead() {
+      const dest = [target.lat, target.lng];
+      let points = [dest];       // no route: straight to the place
+      let offPath = Infinity;    // how far you are from the path (Infinity = there is no path)
+
+      if (route) {
+        // Find the point on the path closest to you, and keep everything after it
+        let nearest = 0;
+        route.forEach((p, i) => {
+          const away = distance(myPosition, p);
+          if (away < offPath) { offPath = away; nearest = i; }
+        });
+        points = [...route.slice(nearest), dest];   // the path ends on a road, so add the place itself
+      }
+
+      const along = cumulative([myPosition, ...points]);
+      return {
+        points,
+        metres: along[along.length - 1],
+        offPath,
+        aim: points.find((p) => distance(myPosition, p) > 20) || dest,   // the next point that's not right under your feet
+      };
+    }
+
+    // Running total of the distance along a path: [0, 1st bit, 1st + 2nd bit, ...]
+    function cumulative(path) {
+      const totals = [0];
+      for (let i = 1; i < path.length; i++) {
+        totals.push(totals[i - 1] + distance(path[i - 1], path[i]));
+      }
+      return totals;
     }
 
     // =============================================================
@@ -719,13 +796,15 @@
       if (pressedButton) speak("Watch the little person. Walk the same way.", true);
       stopShowingTheWay();
 
-      const start = [...myPosition];              // copy of where you are now
-      const end = [target.lat, target.lng];
-      const walkSeconds = 4;
+      // 👈 CHANGED: the walker follows the path, bend by bend
+      const path = [[...myPosition], ...wayAhead().points];   // from where you are now to the place
+      const along = cumulative(path);
+      const total = along[along.length - 1];
+      const walkSeconds = Math.min(8, Math.max(4, total / 100));   // longer paths take a bit longer (4 to 8 s)
       const thisRun = ++ghostRun;
 
-      ghost = L.marker(start, { icon: walkerIcon("ghost"), interactive: false }).addTo(map);
-      ghost.getElement().querySelector(".walker").classList.toggle("left", bearing(start, end) > 180);
+      ghost = L.marker(path[0], { icon: walkerIcon("ghost"), interactive: false }).addTo(map);
+      const walker = ghost.getElement().querySelector(".walker");
 
       const startTime = performance.now();
 
@@ -733,10 +812,17 @@
       function step(now) {
         if (thisRun !== ghostRun) return;         // a newer walk started, or the guide stopped
         const t = Math.min(1, (now - startTime) / (walkSeconds * 1000));   // 0 = start, 1 = end
-        ghost.setLatLng([
-          start[0] + (end[0] - start[0]) * t,
-          start[1] + (end[1] - start[1]) * t,
-        ]);
+
+        // Which bit of the path is the walker on now?
+        const metres = t * total;
+        let k = 0;
+        while (k < path.length - 2 && along[k + 1] < metres) k++;
+        const a = path[k], b = path[k + 1];
+        const bit = along[k + 1] - along[k];
+        const f = bit > 0 ? (metres - along[k]) / bit : 1;   // how far along that bit (0 to 1)
+
+        ghost.setLatLng([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+        walker.classList.toggle("left", bearing(a, b) > 180);   // face the way this bit goes
         if (t < 1) {
           requestAnimationFrame(step);            // not there yet: draw the next frame
         } else {

@@ -1,8 +1,20 @@
+import os                                            # 👈 NEW: lets us read environment variables
 import sqlite3                                       # Python's built-in database tool
-from flask import Flask, render_template, jsonify   # 👈 jsonify is new
+import requests                                      # 👈 NEW: lets Python talk to other websites
+from dotenv import load_dotenv                       # 👈 NEW: reads secrets from the .env file
+from flask import Flask, render_template, jsonify, request   # 👈 request is new
+
+load_dotenv()                # copy the values in .env into the environment
 
 app = Flask(__name__)
 DATABASE = "campus.db"       # the database file (created automatically)
+
+# openrouteservice: the free website that works out walking routes for us
+ORS_URL = "https://api.openrouteservice.org/v2/directions/foot-walking/geojson"
+
+# Only allow points inside this box around UG campus
+CAMPUS_LAT = (5.62, 5.68)
+CAMPUS_LNG = (-0.21, -0.16)
 
 
 # ---------------------------------------------------------------
@@ -121,6 +133,57 @@ def get_places():
     rows = conn.execute("SELECT * FROM places ORDER BY name").fetchall()
     conn.close()
     return jsonify([dict(row) for row in rows])
+
+
+def read_point(lat_name, lng_name):
+    """Read one point from the URL. Gives back (lat, lng), or None if it's missing or off campus."""
+    try:
+        lat = float(request.args[lat_name])
+        lng = float(request.args[lng_name])
+    except (KeyError, ValueError):       # missing, or not a number
+        return None
+    if CAMPUS_LAT[0] <= lat <= CAMPUS_LAT[1] and CAMPUS_LNG[0] <= lng <= CAMPUS_LNG[1]:
+        return lat, lng
+    return None                          # outside the campus box
+
+
+# 👈 NEW: a real walking route that follows the paths
+# Example: /api/route?from_lat=5.6490&from_lng=-0.1870&to_lat=5.6518&to_lng=-0.1871
+@app.route("/api/route")
+def get_route():
+    start = read_point("from_lat", "from_lng")
+    end = read_point("to_lat", "to_lng")
+    if start is None or end is None:
+        return jsonify(error="Send from_lat, from_lng, to_lat and to_lng as numbers inside UG campus."), 400
+
+    api_key = os.environ.get("ORS_API_KEY")
+    if not api_key:
+        return jsonify(error="The server has no ORS_API_KEY set."), 500
+
+    try:
+        response = requests.post(
+            ORS_URL,
+            # ⚠️ ORS wants [lng, lat], the opposite way round to Leaflet!
+            json={"coordinates": [[start[1], start[0]], [end[1], end[0]]]},
+            headers={"Authorization": api_key},
+            timeout=10,                  # give up after 10 seconds
+        )
+        response.raise_for_status()      # turn "401", "404", "500" etc. into an error
+        route = response.json()["features"][0]
+
+        # Flip every point back to [lat, lng] for Leaflet
+        points = [[lat, lng] for lng, lat in route["geometry"]["coordinates"]]
+        distance = route["properties"]["summary"].get("distance", 0)   # no distance if start = end
+        steps = [
+            {"type": step["type"], "start": step["way_points"][0], "name": step["name"]}
+            for segment in route["properties"]["segments"]
+            for step in segment["steps"]
+        ]
+    except (requests.RequestException, ValueError, KeyError, IndexError) as error:
+        print(f"⚠️ Route failed: {error}")    # shows in the terminal, to help you find the problem
+        return jsonify(error="Could not get a walking route. Please try again."), 502
+
+    return jsonify(points=points, distance=round(distance), steps=steps)
 
 setup_database()      # create the database when the app starts
 
